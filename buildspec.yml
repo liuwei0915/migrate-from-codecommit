@@ -1,0 +1,52 @@
+version: 0.2
+env:
+  variables:
+    PYTHONUNBUFFERED: "1"
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.9
+    commands:
+      - pip install pipenv
+
+  pre_build:
+    commands:
+      - echo "Current directory:$(pwd)"
+      - echo "Contents of current directory:$(ls -la)"
+      - if [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_CREATED" ] || [ "$CODEBUILD_WEBHOOK_EVENT" = "PULL_REQUEST_UPDATED" ]; then echo "Checking out PR branch"; pr_id=$(echo $CODEBUILD_SOURCE_VERSION | cut -d'/' -f3); git fetch origin pull/$pr_id/head:pr-$pr_id; git checkout pr-$pr_id; else echo "Not a PR build, using default branch"; fi
+      - cd lambda-moto-test || echo "Failed to change directory to lambda-moto-test"
+      - echo "Current directory after cd:$(pwd)"
+      - echo "Contents of lambda-moto-test directory:$(ls -la)"
+      - pipenv install --dev
+
+  build:
+    commands:
+      - echo "Starting build phase"
+      - pipenv run pytest s3/test_lambda_function.py --junitxml=test-report.xml || echo "Pytest failed"
+      - echo "Contents of current directory after pytest:$(ls -la)"
+
+  post_build:
+    commands:
+      - echo "Starting post-build phase"
+      - cd .. || echo "Failed to change to parent directory"
+      - echo "Current directory:$(pwd)"
+      - echo "Contents of current directory:$(ls -la)"
+      - echo "Contents of lambda-moto-test directory:$(ls -la lambda-moto-test)"
+      - echo "Build succeeding? $CODEBUILD_BUILD_SUCCEEDING"
+      - echo "CODEBUILD_WEBHOOK_PULL_REQUEST_ID:${CODEBUILD_WEBHOOK_PULL_REQUEST_ID:-unknown}"
+      - echo "CODEBUILD_WEBHOOK_SOURCE_REPOSITORY_NAME:${CODEBUILD_WEBHOOK_SOURCE_REPOSITORY_NAME:-unknown}"
+      - if [ "$CODEBUILD_BUILD_SUCCEEDING" = "1" ]; then BUILD_STATUS="SUCCEEDED"; else BUILD_STATUS="FAILED"; fi
+      - echo "Hello"
+      - PAYLOAD=$(echo "{“detail”:{“build-status”:“$BUILD_STATUS”,“pull-request-id”:“${CODEBUILD_WEBHOOK_PULL_REQUEST_ID:-unknown}“,”repository-name”:“${CODEBUILD_WEBHOOK_SOURCE_REPOSITORY_NAME:-unknown}“}}" | base64 -w 0)
+      - echo "Payload:$PAYLOAD"
+      - aws lambda invoke --function-name update-pr-status --payload "$PAYLOAD" response.json || echo "Lambda invocation failed"
+      - echo "Lambda invocation response:"
+      - cat response.json || echo "Failed to read response.json"
+
+reports:
+  pytest_reports:
+    files:
+      - "test-report.xml"
+    file-format: JUNITXML
+    base-directory: 'lambda-moto-test'
